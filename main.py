@@ -52,6 +52,9 @@ def _process_label_image(task):
     image_target_path = image_output_folder / f"{task['checksum']}.JPG"
     label_target_path = label_output_folder / f"{task['checksum']}.txt"
 
+    if image_target_path.exists():
+        return os.getpid()
+
     source_nas_path = f"/fishsense_data/REEF/data/{task['relative_image_path']}"
     image_path.parent.mkdir(parents=True, exist_ok=True)
     _FILESTATION.get_file(source_nas_path, "download", dest_path=str(image_path.parent))
