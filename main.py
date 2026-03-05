@@ -10,7 +10,7 @@ import cv2
 from fishsense_core.image.raw_image import RawImage
 from fishsense_core.image.rectified_image import RectifiedImage
 
-from multiprocessing import Pool
+from multiprocessing import get_context
 
 
 _WORKER_CONTEXT = {}
@@ -148,7 +148,7 @@ async def main():
     }
 
     tasks = list(zip(labels, images))
-    with Pool(processes=16, initializer=_init_worker, initargs=(worker_context,)) as pool:
+    with get_context("spawn").Pool(processes=16, initializer=_init_worker, initargs=(worker_context,)) as pool:
         list(tqdm(pool.imap_unordered(_process_label_image, tasks), total=len(tasks)))
 
 if __name__ == "__main__":
