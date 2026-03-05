@@ -9,6 +9,7 @@ from tqdm import tqdm
 import cv2
 from fishsense_core.image.raw_image import RawImage
 from fishsense_core.image.rectified_image import RectifiedImage
+import os
 
 from multiprocessing import get_context
 
@@ -21,6 +22,13 @@ def _init_worker(worker_context):
     global _WORKER_CONTEXT
     global _FILESTATION
     _WORKER_CONTEXT = worker_context
+
+    # Avoid each worker over-subscribing CPU via OpenMP/BLAS thread pools.
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["NUMEXPR_NUM_THREADS"] = "1"
+    cv2.setNumThreads(1)
 
     parsed_url = urlparse(_WORKER_CONTEXT["nas_url"])
     _FILESTATION = FileStation(
@@ -52,10 +60,12 @@ def _process_label_image(task):
     cv2.imwrite(image_target_path.as_posix(), rectified_image.data)
 
     if task["head_x"] is None or task["head_y"] is None or task["tail_x"] is None or task["tail_y"] is None:
-        return
+        return os.getpid()
 
     with open(label_target_path, "w") as f:
         f.write(f"{task['head_x']} {task['head_y']} {task['tail_x']} {task['tail_y']}\n")
+
+    return os.getpid()
 
 async def main():
     # %%
@@ -157,7 +167,10 @@ async def main():
         )
 
     with get_context("spawn").Pool(processes=16, initializer=_init_worker, initargs=(worker_context,)) as pool:
-        list(tqdm(pool.imap_unordered(_process_label_image, tasks, chunksize=1), total=len(tasks)))
+        worker_pids = list(tqdm(pool.imap_unordered(_process_label_image, tasks, chunksize=1), total=len(tasks)))
+
+    unique_workers = len(set(worker_pids))
+    print(f"Processed {len(worker_pids)} tasks using {unique_workers} worker processes.")
 
 if __name__ == "__main__":
     import asyncio
