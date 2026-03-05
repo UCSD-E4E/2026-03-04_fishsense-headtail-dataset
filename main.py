@@ -57,7 +57,15 @@ def _process_label_image(task):
 
     source_nas_path = f"/fishsense_data/REEF/data/{task['relative_image_path']}"
     image_path.parent.mkdir(parents=True, exist_ok=True)
-    _FILESTATION.get_file(source_nas_path, "download", dest_path=str(image_path.parent))
+    
+    for _ in range(3):  # Retry up to 3 times
+        try:
+            _FILESTATION.get_file(source_nas_path, "download", dest_path=str(image_path.parent))
+            break  # Success, exit the retry loop
+        except Exception as e:
+            print(f"Error downloading {source_nas_path}: {e}")
+
+        return os.getpid()
 
     rectified_image = RectifiedImage(RawImage(image_path), camera_intrinsics)
     cv2.imwrite(image_target_path.as_posix(), rectified_image.data)
