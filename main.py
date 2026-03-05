@@ -14,25 +14,16 @@ from multiprocessing import get_context
 
 
 _WORKER_CONTEXT = {}
+_FILESTATION = None
 
 
 def _init_worker(worker_context):
     global _WORKER_CONTEXT
+    global _FILESTATION
     _WORKER_CONTEXT = worker_context
 
-
-def _process_label_image(pair):
-    label, image = pair
-
-    dives_by_id = _WORKER_CONTEXT["dives_by_id"]
-    cameras_by_id = _WORKER_CONTEXT["cameras_by_id"]
-    camera_intrinsics_by_camera_id = _WORKER_CONTEXT["camera_intrinsics_by_camera_id"]
-    data_folder = Path(_WORKER_CONTEXT["data_folder"])
-    image_output_folder = Path(_WORKER_CONTEXT["image_output_folder"])
-    label_output_folder = Path(_WORKER_CONTEXT["label_output_folder"])
-
     parsed_url = urlparse(_WORKER_CONTEXT["nas_url"])
-    filestation = FileStation(
+    _FILESTATION = FileStation(
         parsed_url.hostname,
         parsed_url.port,
         _WORKER_CONTEXT["nas_username"],
@@ -41,26 +32,30 @@ def _process_label_image(pair):
         cert_verify=False,
     )
 
-    dive = dives_by_id[image.dive_id]
-    camera = cameras_by_id[dive.camera_id]
-    camera_intrinsics = camera_intrinsics_by_camera_id[camera.id]
 
-    image_path = data_folder / image.path
-    image_target_path = image_output_folder / f"{image.checksum}.JPG"
-    label_target_path = label_output_folder / f"{image.checksum}.txt"
+def _process_label_image(task):
+    camera_intrinsics_by_camera_id = _WORKER_CONTEXT["camera_intrinsics_by_camera_id"]
+    data_folder = Path(_WORKER_CONTEXT["data_folder"])
+    image_output_folder = Path(_WORKER_CONTEXT["image_output_folder"])
+    label_output_folder = Path(_WORKER_CONTEXT["label_output_folder"])
 
-    source_nas_path = f"/fishsense_data/REEF/data/{image.path}"
+    camera_intrinsics = camera_intrinsics_by_camera_id[task["camera_id"]]
+    image_path = data_folder / task["relative_image_path"]
+    image_target_path = image_output_folder / f"{task['checksum']}.JPG"
+    label_target_path = label_output_folder / f"{task['checksum']}.txt"
+
+    source_nas_path = f"/fishsense_data/REEF/data/{task['relative_image_path']}"
     image_path.parent.mkdir(parents=True, exist_ok=True)
-    filestation.get_file(source_nas_path, "download", dest_path=str(image_path.parent))
+    _FILESTATION.get_file(source_nas_path, "download", dest_path=str(image_path.parent))
 
     rectified_image = RectifiedImage(RawImage(image_path), camera_intrinsics)
     cv2.imwrite(image_target_path.as_posix(), rectified_image.data)
 
-    if label.head_x is None or label.head_y is None or label.tail_x is None or label.tail_y is None:
+    if task["head_x"] is None or task["head_y"] is None or task["tail_x"] is None or task["tail_y"] is None:
         return
 
     with open(label_target_path, "w") as f:
-        f.write(f"{label.head_x} {label.head_y} {label.tail_x} {label.tail_y}\n")
+        f.write(f"{task['head_x']} {task['head_y']} {task['tail_x']} {task['tail_y']}\n")
 
 async def main():
     # %%
@@ -134,10 +129,10 @@ async def main():
 
     len(camera_intrinsics_by_camera_id), camera_intrinsics_by_camera_id
 
+    dive_camera_id_by_dive_id = {dive.id: dive.camera_id for dive in dives}
+
     # %%
     worker_context = {
-        "dives_by_id": dives_by_id,
-        "cameras_by_id": cameras_by_id,
         "camera_intrinsics_by_camera_id": camera_intrinsics_by_camera_id,
         "data_folder": str(DATA_FOLDER),
         "image_output_folder": str(IMAGE_OUTPUT_FOLDER),
@@ -147,9 +142,22 @@ async def main():
         "nas_password": settings.e4e_nas.password,
     }
 
-    tasks = list(zip(labels, images))
+    tasks = []
+    for label, image in zip(labels, images):
+        tasks.append(
+            {
+                "camera_id": dive_camera_id_by_dive_id[image.dive_id],
+                "relative_image_path": image.path,
+                "checksum": image.checksum,
+                "head_x": label.head_x,
+                "head_y": label.head_y,
+                "tail_x": label.tail_x,
+                "tail_y": label.tail_y,
+            }
+        )
+
     with get_context("spawn").Pool(processes=16, initializer=_init_worker, initargs=(worker_context,)) as pool:
-        list(tqdm(pool.imap_unordered(_process_label_image, tasks), total=len(tasks)))
+        list(tqdm(pool.imap_unordered(_process_label_image, tasks, chunksize=1), total=len(tasks)))
 
 if __name__ == "__main__":
     import asyncio
